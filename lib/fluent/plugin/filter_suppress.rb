@@ -1,17 +1,18 @@
-require 'fluent/plugin/filter'
+require "fluent/plugin/filter"
 
 module Fluent::Plugin
   class SuppressFilter < Fluent::Plugin::Filter
-    Fluent::Plugin.register_filter('suppress', self)
+    Fluent::Plugin.register_filter("suppress", self)
 
-    config_param :attr_keys,     :string,  default: nil
-    config_param :num,           :integer, default: 3
-    config_param :max_slot_num,  :integer, default: 100000
-    config_param :interval,      :integer, default: 300
+    config_param :attr_keys, :string, default: nil
+    config_param :num, :integer, default: 3
+    config_param :max_slot_num, :integer, default: 100000
+    config_param :interval, :integer, default: 300
+    config_param :supress_info_field, :string, default: "supressed_dates"
 
     def configure(conf)
       super
-      @keys  = @attr_keys ? @attr_keys.split(/ *, */) : nil
+      @keys = @attr_keys ? @attr_keys.split(/ *, */) : nil
       @slots = {}
     end
 
@@ -20,7 +21,7 @@ module Fluent::Plugin
       es.each do |time, record|
         if @keys
           keys = @keys.map do |key|
-            key.split(/\./).inject(record) {|r, k| r[k] }
+            key.split(/\./).inject(record) { |r, k| r[k] }
           end
           key = tag + "\0" + keys.join("\0")
         else
@@ -28,15 +29,18 @@ module Fluent::Plugin
         end
         slot = @slots[key] ||= []
 
-        # expire old records time
         expired = time.to_f - @interval
-        while slot.first && (slot.first <= expired)
+        if (slot.first && (slot.first <= expired)) || slot.length > @num
           slot.shift
-        end
-
-        if slot.length >= @num
-          log.debug "suppressed record: #{record.to_json}"
+          unless slot.empty?
+            record[@supress_info_field] = slot.map { |item| Time.at(item).utc.strftime("%Y-%m-%d %H:%M:%S.%3N %z") }
+            slot.clear
+          end
+        elsif slot.first
+          slot.push(time.to_f)
           next
+        else
+          slot.push(time.to_f)
         end
 
         if @slots.length > @max_slot_num
@@ -46,7 +50,6 @@ module Fluent::Plugin
           end
         end
 
-        slot.push(time.to_f)
         new_es.add(time, record)
       end
       return new_es
